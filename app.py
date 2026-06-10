@@ -1,6 +1,32 @@
 import streamlit as st
 import time
-from tools.diff_tool import get_diff_lines, get_summary_stats
+import difflib as _difflib
+
+# ── Inlined diff logic (avoids LangChain StructuredTool collision) ──
+def get_diff_lines(original: str, refactored: str):
+    original_lines   = original.splitlines()
+    refactored_lines = refactored.splitlines()
+    result = []
+    for line in _difflib.ndiff(original_lines, refactored_lines):
+        if line.startswith("+ "):
+            result.append({"type": "added",     "content": line[2:]})
+        elif line.startswith("- "):
+            result.append({"type": "removed",   "content": line[2:]})
+        elif line.startswith("  "):
+            result.append({"type": "unchanged", "content": line[2:]})
+    return result
+
+def get_summary_stats(diff_lines: list):
+    added     = sum(1 for l in diff_lines if l["type"] == "added")
+    removed   = sum(1 for l in diff_lines if l["type"] == "removed")
+    unchanged = sum(1 for l in diff_lines if l["type"] == "unchanged")
+    return {
+        "lines_added":     added,
+        "lines_removed":   removed,
+        "lines_unchanged": unchanged,
+        "total_changes":   added + removed,
+    }
+
 from agents import performance_chain, security_chain, style_chain, merge_chain
 
 # ── Direct agent components (used as fallback if chain pipe fails) ──
