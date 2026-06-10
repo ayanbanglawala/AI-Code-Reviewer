@@ -497,14 +497,47 @@ if run_clicked and code_input.strip():
         log_ph.markdown(render_log(logs), unsafe_allow_html=True)
 
     def invoke_safe(chain, inputs, label):
-        """Invoke a LangChain chain and always return a plain non-empty string."""
+        """Invoke a LangChain chain and always return a plain non-empty string.
+        Handles AIMessage, StructuredTool, and any other unexpected return types.
+        """
         try:
             result = chain.invoke(inputs)
+
+            # None guard
             if result is None:
                 return f"[{label}] Agent returned no output."
-            if not isinstance(result, str):
-                result = str(result)
-            return result.strip() or f"[{label}] Agent returned empty string."
+
+            # Already a plain string — ideal case
+            if isinstance(result, str):
+                return result.strip() or f"[{label}] Agent returned empty string."
+
+            # LangChain AIMessage / BaseMessage  →  .content attribute
+            if hasattr(result, "content"):
+                text = result.content
+                if isinstance(text, str):
+                    return text.strip() or f"[{label}] Agent returned empty content."
+                # content can itself be a list of dicts (tool-use blocks)
+                if isinstance(text, list):
+                    parts = [
+                        block.get("text", "") if isinstance(block, dict) else str(block)
+                        for block in text
+                    ]
+                    return "".join(parts).strip() or f"[{label}] Agent returned empty content list."
+
+            # LangChain generations list  →  .generations[0][0].text
+            if hasattr(result, "generations"):
+                try:
+                    return result.generations[0][0].text.strip()
+                except Exception:
+                    pass
+
+            # Pydantic model or dataclass  →  try .text then fall back to str()
+            if hasattr(result, "text"):
+                return str(result.text).strip()
+
+            # Last resort: stringify whatever came back
+            return str(result).strip() or f"[{label}] Agent returned empty string."
+
         except Exception as exc:
             return f"[{label}] Agent error: {exc}"
 
