@@ -3,6 +3,103 @@ import time
 from tools.diff_tool import get_diff_lines, get_summary_stats
 from agents import performance_chain, security_chain, style_chain, merge_chain
 
+# ── Direct agent components (used as fallback if chain pipe fails) ──
+import os, re as _re
+from dotenv import load_dotenv as _load_dotenv
+_load_dotenv()
+
+def _run_chain_safe(chain, inputs: dict, label: str) -> str:
+    """
+    Universal chain invoker.
+    1. Try chain.invoke() — works when LangChain pipe is healthy.
+    2. If that returns a non-string object, extract .content / .text.
+    3. If invoke() itself raises (StructuredTool bug, version mismatch, etc.)
+       fall back to calling the LLM directly via the Mistral API.
+    """
+    import re
+
+    def _extract(result) -> str:
+        if result is None:
+            return ""
+        if isinstance(result, str):
+            return result.strip()
+        if hasattr(result, "content"):
+            c = result.content
+            if isinstance(c, str):
+                return c.strip()
+            if isinstance(c, list):
+                return "".join(
+                    b.get("text", "") if isinstance(b, dict) else str(b) for b in c
+                ).strip()
+        if hasattr(result, "generations"):
+            try:
+                return result.generations[0][0].text.strip()
+            except Exception:
+                pass
+        if hasattr(result, "text"):
+            return str(result.text).strip()
+        return str(result).strip()
+
+    # ── Attempt 1: normal chain.invoke ──
+    try:
+        result = chain.invoke(inputs)
+        text = _extract(result)
+        if text:
+            return text
+    except Exception:
+        pass  # fall through to direct API call
+
+    # ── Attempt 2: direct Mistral API via mistralai SDK ──
+    try:
+        from mistralai import Mistral
+        # Reconstruct the prompt string from the chain's prompt template
+        prompt_template = chain.first   # RunnableSequence stores steps
+        formatted = prompt_template.invoke(inputs)
+        if hasattr(formatted, "to_string"):
+            prompt_text = formatted.to_string()
+        elif hasattr(formatted, "text"):
+            prompt_text = formatted.text
+        else:
+            prompt_text = str(formatted)
+
+        client = Mistral(api_key=os.getenv("MISTRAL_API_KEY"))
+        resp = client.chat.complete(
+            model="mistral-small-latest",
+            messages=[{"role": "user", "content": prompt_text}],
+        )
+        return resp.choices[0].message.content.strip()
+    except Exception:
+        pass
+
+    # ── Attempt 3: direct HTTP to Mistral API ──
+    try:
+        import json, urllib.request
+        prompt_template = chain.first
+        formatted = prompt_template.invoke(inputs)
+        prompt_text = (
+            formatted.to_string() if hasattr(formatted, "to_string")
+            else formatted.text if hasattr(formatted, "text")
+            else str(formatted)
+        )
+        payload = json.dumps({
+            "model": "mistral-small-latest",
+            "messages": [{"role": "user", "content": prompt_text}],
+        }).encode()
+        req = urllib.request.Request(
+            "https://api.mistral.ai/v1/chat/completions",
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {os.getenv('MISTRAL_API_KEY', '')}",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            data = json.loads(resp.read())
+        return data["choices"][0]["message"]["content"].strip()
+    except Exception as e:
+        return f"[{label}] All invocation methods failed. Last error: {e}"
+
+
 # ─────────────────────────────────────────
 # PAGE CONFIG
 # ─────────────────────────────────────────
@@ -497,49 +594,7 @@ if run_clicked and code_input.strip():
         log_ph.markdown(render_log(logs), unsafe_allow_html=True)
 
     def invoke_safe(chain, inputs, label):
-        """Invoke a LangChain chain and always return a plain non-empty string.
-        Handles AIMessage, StructuredTool, and any other unexpected return types.
-        """
-        try:
-            result = chain.invoke(inputs)
-
-            # None guard
-            if result is None:
-                return f"[{label}] Agent returned no output."
-
-            # Already a plain string — ideal case
-            if isinstance(result, str):
-                return result.strip() or f"[{label}] Agent returned empty string."
-
-            # LangChain AIMessage / BaseMessage  →  .content attribute
-            if hasattr(result, "content"):
-                text = result.content
-                if isinstance(text, str):
-                    return text.strip() or f"[{label}] Agent returned empty content."
-                # content can itself be a list of dicts (tool-use blocks)
-                if isinstance(text, list):
-                    parts = [
-                        block.get("text", "") if isinstance(block, dict) else str(block)
-                        for block in text
-                    ]
-                    return "".join(parts).strip() or f"[{label}] Agent returned empty content list."
-
-            # LangChain generations list  →  .generations[0][0].text
-            if hasattr(result, "generations"):
-                try:
-                    return result.generations[0][0].text.strip()
-                except Exception:
-                    pass
-
-            # Pydantic model or dataclass  →  try .text then fall back to str()
-            if hasattr(result, "text"):
-                return str(result.text).strip()
-
-            # Last resort: stringify whatever came back
-            return str(result).strip() or f"[{label}] Agent returned empty string."
-
-        except Exception as exc:
-            return f"[{label}] Agent error: {exc}"
+        return _run_chain_safe(chain, inputs, label)
 
     try:
         # ── Stage 0: Security ──
