@@ -496,61 +496,83 @@ if run_clicked and code_input.strip():
         pipe_ph.markdown(render_pipeline(current_idx, done_ids), unsafe_allow_html=True)
         log_ph.markdown(render_log(logs), unsafe_allow_html=True)
 
-    # ── Stage 0: Security ──
-    add_log("Starting Security agent…", "run")
-    update(0)
-    status_ph.info("🔒 Running security analysis…")
-    sec_result = security_chain.invoke({"code": code_input})
-    done_ids.add("security")
-    add_log("Security review complete.", "done")
+    def invoke_safe(chain, inputs, label):
+        """Invoke a LangChain chain and always return a plain non-empty string."""
+        try:
+            result = chain.invoke(inputs)
+            if result is None:
+                return f"[{label}] Agent returned no output."
+            if not isinstance(result, str):
+                result = str(result)
+            return result.strip() or f"[{label}] Agent returned empty string."
+        except Exception as exc:
+            return f"[{label}] Agent error: {exc}"
 
-    # ── Stage 1: Performance ──
-    add_log("Starting Performance agent…", "run")
-    update(1)
-    status_ph.info("⚡ Running performance analysis…")
-    perf_result = performance_chain.invoke({"code": code_input})
-    done_ids.add("performance")
-    add_log("Performance review complete.", "done")
+    try:
+        # ── Stage 0: Security ──
+        add_log("Starting Security agent…", "run")
+        update(0)
+        status_ph.info("🔒 Running security analysis…")
+        sec_result = invoke_safe(security_chain, {"code": code_input}, "Security")
+        done_ids.add("security")
+        add_log("Security review complete.", "done")
 
-    # ── Stage 2: Style ──
-    add_log("Starting Style agent…", "run")
-    update(2)
-    status_ph.info("✦  Running style analysis…")
-    style_result = style_chain.invoke({"code": code_input})
-    done_ids.add("style")
-    add_log("Style review complete.", "done")
+        # ── Stage 1: Performance ──
+        add_log("Starting Performance agent…", "run")
+        update(1)
+        status_ph.info("⚡ Running performance analysis…")
+        perf_result = invoke_safe(performance_chain, {"code": code_input}, "Performance")
+        done_ids.add("performance")
+        add_log("Performance review complete.", "done")
 
-    # ── Stage 3: Merger ──
-    add_log("Synthesizing all reviews → Merger agent…", "run")
-    update(3)
-    status_ph.info("⬡  Merging reviews and generating refactored code…")
-    merged_result = merge_chain.invoke({
-        "code":               code_input,
-        "security_review":    sec_result,
-        "performance_review": perf_result,
-        "style_review":       style_result,
-    })
-    done_ids.add("merger")
-    add_log("Merger complete. Refactored code ready.", "done")
-    update(4)
-    status_ph.success("✓  All agents finished.")
+        # ── Stage 2: Style ──
+        add_log("Starting Style agent…", "run")
+        update(2)
+        status_ph.info("✦  Running style analysis…")
+        style_result = invoke_safe(style_chain, {"code": code_input}, "Style")
+        done_ids.add("style")
+        add_log("Style review complete.", "done")
 
-    # ── Strip markdown fences before diffing ──
-    merged_clean = strip_code_fences(merged_result)
+        # ── Stage 3: Merger ──
+        add_log("Synthesizing all reviews → Merger agent…", "run")
+        update(3)
+        status_ph.info("⬡  Merging reviews and generating refactored code…")
+        merged_result = invoke_safe(merge_chain, {
+            "code":               code_input,
+            "security_review":    sec_result,
+            "performance_review": perf_result,
+            "style_review":       style_result,
+        }, "Merger")
+        done_ids.add("merger")
+        add_log("Merger complete. Refactored code ready.", "done")
+        update(4)
+        status_ph.success("✓  All agents finished.")
 
-    # ── Diff ──
-    diff_lines = get_diff_lines(code_input, merged_clean)
-    stats      = get_summary_stats(diff_lines)
+        # ── Strip markdown fences & ensure string before diffing ──
+        merged_clean = strip_code_fences(merged_result)
+        if not merged_clean.strip():
+            merged_clean = code_input
+            add_log("⚠ Merger returned empty — diff shows original.", "info")
 
-    st.session_state.results = {
-        "security":    sec_result,
-        "performance": perf_result,
-        "style":       style_result,
-        "merged":      merged_clean,
-        "diff_lines":  diff_lines,
-        "stats":       stats,
-    }
-    st.session_state.pipeline_log = logs
+        # ── Diff ──
+        diff_lines = get_diff_lines(str(code_input), str(merged_clean))
+        stats      = get_summary_stats(diff_lines)
+
+        st.session_state.results = {
+            "security":    sec_result,
+            "performance": perf_result,
+            "style":       style_result,
+            "merged":      merged_clean,
+            "diff_lines":  diff_lines,
+            "stats":       stats,
+        }
+        st.session_state.pipeline_log = logs
+
+    except Exception as pipeline_err:
+        status_ph.error(f"Pipeline failed: {pipeline_err}")
+        add_log(f"Fatal: {pipeline_err}", "info")
+        log_ph.markdown(render_log(logs), unsafe_allow_html=True)
+        st.stop()
 
     st.rerun()
 
