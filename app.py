@@ -29,25 +29,25 @@ dark = st.session_state.dark_mode
 # DESIGN TOKENS
 # ─────────────────────────────────────────
 if dark:
-    BG        = "#f5f5f7"
-    SURFACE   = "#ffffff"
-    BORDER    = "#e0e0e6"
-    TEXT_PRI  = "#111114"
-    TEXT_SEC  = "#6e6e7a"
-    ACCENT    = "#5b4ef0"
-    ACCENT2   = "#0da5a5"
-    ADD_BG    = "#eafaf2"
-    ADD_FG    = "#0e7a4c"
-    REM_BG    = "#faeaea"
-    REM_FG    = "#b83030"
-    UN_BG     = "#f9f9fb"
-    UN_FG     = "#9898a6"
-    PILL_BG   = "#eeecfc"
-    BADGE_DONE = "#ddf5ea"
-    BADGE_DONE_FG = "#0e7a4c"
-    BADGE_WAIT_FG = "#9898a6"
-    TOGGLE_BG = "#e0e0e6"
-    SHADOW    = "0 4px 32px rgba(0,0,0,0.10)"
+    BG        = "#0d0d0f"
+    SURFACE   = "#161618"
+    BORDER    = "#2a2a2e"
+    TEXT_PRI  = "#f0f0f2"
+    TEXT_SEC  = "#8a8a96"
+    ACCENT    = "#7c6dfa"        # violet — the signature
+    ACCENT2   = "#3ecfcf"        # teal highlight
+    ADD_BG    = "#0d2b1e"
+    ADD_FG    = "#3ecf8e"
+    REM_BG    = "#2b0d0d"
+    REM_FG    = "#e87070"
+    UN_BG     = "#1a1a1c"
+    UN_FG     = "#6e6e7a"
+    PILL_BG   = "#1e1a38"
+    BADGE_DONE = "#1a3a2a"
+    BADGE_DONE_FG = "#3ecf8e"
+    BADGE_WAIT_FG = "#8a8a96"
+    TOGGLE_BG = "#2a2a2e"
+    SHADOW    = "0 4px 32px rgba(0,0,0,0.6)"
 else:
     BG        = "#f5f5f7"
     SURFACE   = "#ffffff"
@@ -284,7 +284,6 @@ st.markdown(f"""
   }}
   .cr-wordmark {{
     display: flex;
-    margin-top: 1.5rem;
     align-items: center;
     gap: .65rem;
   }}
@@ -399,9 +398,13 @@ with hcol1:
       <div class="cr-brand">code<span>review</span>.ai</div>
     </div>
     """, unsafe_allow_html=True)
+with hcol2:
+    theme_label = "☀ Light" if dark else "🌙 Dark"
+    if st.button(theme_label, key="theme_toggle"):
+        st.session_state.dark_mode = not st.session_state.dark_mode
+        st.rerun()
 
-
-# st.markdown(f"<hr style='border:none;border-top:1px solid {BORDER};margin:.6rem 0 2rem 0;'>", unsafe_allow_html=True)
+st.markdown(f"<hr style='border:none;border-top:1px solid {BORDER};margin:.6rem 0 2rem 0;'>", unsafe_allow_html=True)
 
 # ─────────────────────────────────────────
 # HERO INPUT SECTION
@@ -457,6 +460,19 @@ def render_log(logs: list):
         rows += f'<div class="{cls}">{entry["msg"]}</div>'
     return f'<div class="log-wrap">{rows}</div>'
 
+
+def strip_code_fences(text: str) -> str:
+    """Remove markdown code fences like ```python ... ``` from LLM output."""
+    import re
+    # Remove opening fence with optional language tag
+    text = re.sub(r"^```[\w]*\n?", "", text.strip(), flags=re.MULTILINE)
+    # Remove closing fence
+    text = re.sub(r"^```\s*$", "", text.strip(), flags=re.MULTILINE)
+    return text.strip()
+
+def safe_html(text: str) -> str:
+    """Escape HTML special chars for safe rendering inside markdown divs."""
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 if run_clicked and code_input.strip():
     st.session_state.results = None
@@ -519,17 +535,20 @@ if run_clicked and code_input.strip():
     update(4)
     status_ph.success("✓  All agents finished.")
 
+    # ── Strip markdown fences before diffing ──
+    merged_clean = strip_code_fences(merged_result)
+
     # ── Diff ──
-    diff_lines = get_diff_lines(code_input, merged_result)
+    diff_lines = get_diff_lines(code_input, merged_clean)
     stats      = get_summary_stats(diff_lines)
 
     st.session_state.results = {
-        "security":   sec_result,
+        "security":    sec_result,
         "performance": perf_result,
-        "style":      style_result,
-        "merged":     merged_result,
-        "diff_lines": diff_lines,
-        "stats":      stats,
+        "style":       style_result,
+        "merged":      merged_clean,
+        "diff_lines":  diff_lines,
+        "stats":       stats,
     }
     st.session_state.pipeline_log = logs
 
@@ -570,13 +589,13 @@ if st.session_state.results:
         st.markdown("</div>", unsafe_allow_html=True)
 
     with tab2:
-        st.markdown(f"<div class='cr-card'><div class='cr-card-title'>Security Analysis</div><div class='review-body'>{r['security']}</div></div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='cr-card'><div class='cr-card-title'>Security Analysis</div><div class='review-body'>{safe_html(r['security'])}</div></div>", unsafe_allow_html=True)
 
     with tab3:
-        st.markdown(f"<div class='cr-card'><div class='cr-card-title'>Performance Analysis</div><div class='review-body'>{r['performance']}</div></div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='cr-card'><div class='cr-card-title'>Performance Analysis</div><div class='review-body'>{safe_html(r['performance'])}</div></div>", unsafe_allow_html=True)
 
     with tab4:
-        st.markdown(f"<div class='cr-card'><div class='cr-card-title'>Style Analysis</div><div class='review-body'>{r['style']}</div></div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='cr-card'><div class='cr-card-title'>Style Analysis</div><div class='review-body'>{safe_html(r['style'])}</div></div>", unsafe_allow_html=True)
 
     with tab5:
         s = r["stats"]
